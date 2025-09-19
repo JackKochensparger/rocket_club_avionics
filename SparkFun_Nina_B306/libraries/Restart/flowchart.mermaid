@@ -1,0 +1,122 @@
+flowchart TD
+    A[SYSTEM STARTUP] --> B{Initialize Wire & SPI}
+    B -->|Success| C[Record Start Time millis]
+    B -->|Fail| Z1[CRITICAL FAILURE - No I2C/SPI]
+    
+    C --> D[Initialize Sensor Manager]
+    D --> D1[BME280 Environmental Sensor Init]
+    D --> D2[ISM330DHCX IMU Sensor Init]
+    D --> D3[MAX1704X Battery Monitor Init]
+    
+    D1 --> D1A{BME280 I2C Address 0x76}
+    D1A -->|Found| D1B[Set temp_sensor_ok = true]
+    D1A -->|Not Found| D1C[Set temp_sensor_ok = false<br/>Log -999.0 for temp readings]
+    
+    D2 --> D2A{ISM330DHCX Detected}
+    D2A -->|Found| D2B[Device Reset & Configure<br/>Accel: 833Hz, ±16g<br/>Gyro: 833Hz, ±2000dps<br/>Minimal filtering for responsiveness]
+    D2A -->|Not Found| D2C[Set imu_sensor_ok = false<br/>Log -999.0 for IMU readings]
+    D2B --> D2D[Set imu_sensor_ok = true]
+    
+    D3 --> D3A{MAX1704X Battery Monitor}
+    D3A -->|Found| D3B[Configure 20% warning threshold<br/>Clear alerts<br/>Set battery_sensor_ok = true]
+    D3A -->|Not Found| D3C[Set battery_sensor_ok = false<br/>Log -999.0 for battery readings]
+    
+    D1B --> E[Initialize SD Logger]
+    D1C --> E
+    D2D --> E
+    D2C --> E
+    D3B --> E
+    D3C --> E
+    
+    E --> E1[Set SD CS Pin 25 HIGH<br/>Initialize SPI for SD]
+    E1 --> E2{SD.begin Pin 25}
+    E2 -->|Fail| Z2[SD CARD FAILURE<br/>No logging possible<br/>System continues but no data saved]
+    E2 -->|Success| E3[Perform SD Write/Read Test]
+    
+    E3 --> E3A[Create TEST.TMP file<br/>Write test data<br/>Read back and verify]
+    E3A --> E3B{Test Successful?}
+    E3B -->|Fail| Z2
+    E3B -->|Success| E4[Generate Unique Filename<br/>Format: DATA_XXXXXX.CSV<br/>where XXXXXX = millis at startup]
+    
+    E4 --> E5[Create and Open Data File]
+    E5 --> E5A{File Created Successfully?}
+    E5A -->|Fail| Z2
+    E5A -->|Success| E6[Write CSV Header<br/># ROCKET DATA LOG<br/># Time,Temp,Humidity,Pressure,etc.]
+    E6 --> E7[Flush header to SD<br/>Set logging_active = true]
+    
+    E7 --> F[500ms Stabilization Delay]
+    F --> G[MAIN LOOP START]
+    
+    G --> H[Get Current Time = millis]
+    H --> I{Time Since Last Log >= 100ms?}
+    I -->|No| I1[Delay 10ms<br/>Prevent CPU overload]
+    I1 --> G
+    I -->|Yes| J[READ ALL SENSORS]
+    
+    J --> J1[Environmental Sensor Reading]
+    J1 --> J1A{temp_sensor_ok?}
+    J1A -->|true| J1B[Read BME280:<br/>temperature_C = envSensor.readTempC<br/>humidity_percent = envSensor.readFloatHumidity<br/>pressure_Pa = envSensor.readFloatPressure]
+    J1A -->|false| J1C[Set all environmental values to -999.0]
+    
+    J1B --> J2[IMU Sensor Reading]
+    J1C --> J2
+    J2 --> J2A{imu_sensor_ok && checkStatus?}
+    J2A -->|true| J2B[Read ISM330DHCX:<br/>Get Acceleration & Gyroscope data<br/>Convert accel to mg units<br/>Convert gyro mdps to dps<br/>Calculate total_accel = sqrt X^2 + Y^2 + Z^2]
+    J2A -->|false| J2C[Set all IMU values to -999.0]
+    
+    J2B --> J3[Battery Sensor Reading]
+    J2C --> J3
+    J3 --> J3A{battery_sensor_ok?}
+    J3A -->|true| J3B[Read MAX1704X:<br/>battery_voltage_V = lipo.getVoltage<br/>battery_percent = lipo.getSOC]
+    J3A -->|false| J3C[Set battery values to -999.0]
+    
+    J3B --> K[CALCULATE ELAPSED TIME]
+    J3C --> K
+    K --> K1[elapsed_time = currentTime - startTime / 1000.0<br/>Precision: 0.1 seconds as requested]
+    
+    K1 --> L[LOG DATA TO SD CARD]
+    L --> L1{logging_active && dataFile open?}
+    L1 -->|false| L9[Skip logging - continue loop]
+    L1 -->|true| L2[Write CSV Data Line:]
+    
+    L2 --> L3[elapsedTime,1 decimal]
+    L3 --> L4[temperature_C,2 decimals]
+    L4 --> L5[humidity_percent,1 decimal]
+    L5 --> L6[pressure_Pa,0 decimals]
+    L6 --> L7[accel_X_mg,1 decimal]
+    L7 --> L8[accel_Y_mg,1 decimal]
+    L8 --> L9[accel_Z_mg,1 decimal]
+    L9 --> L10[accel_total_mg,1 decimal]
+    L10 --> L11[gyro_X_dps,2 decimals]
+    L11 --> L12[gyro_Y_dps,2 decimals]
+    L12 --> L13[gyro_Z_dps,2 decimals]
+    L13 --> L14[battery_voltage_V,3 decimals]
+    L14 --> L15[battery_percent,1 decimal + newline]
+    
+    L15 --> M[Write Count Management]
+    M --> M1[Increment static writeCount]
+    M1 --> M2{writeCount >= 10?}
+    M2 -->|true| M3[dataFile.flush - Force write to SD<br/>Reset writeCount = 0<br/>Ensures data saved every 1 second]
+    M2 -->|false| M4[Continue without flush<br/>Better performance]
+    
+    M3 --> N[Update lastLogTime]
+    M4 --> N
+    N --> N1[lastLogTime = currentTime]
+    N1 --> G
+    
+    %% Error States
+    Z1 --> Z1A[System Halted<br/>No sensors can operate<br/>Check wiring and power]
+    Z2 --> Z2A[Continue operation without logging<br/>Sensors still read but data not saved<br/>Check SD card connection]
+    
+    %% Styling
+    classDef startEnd fill:#90EE90,stroke:#006400,stroke-width:3px
+    classDef process fill:#87CEEB,stroke:#4682B4,stroke-width:2px
+    classDef decision fill:#FFE4B5,stroke:#FF8C00,stroke-width:2px
+    classDef error fill:#FFB6C1,stroke:#DC143C,stroke-width:3px
+    classDef sensor fill:#E6E6FA,stroke:#8A2BE2,stroke-width:2px
+    
+    class A,F,G startEnd
+    class B,C,D,E,J,K,L,M,N process
+    class I,J1A,J2A,J3A,L1,M2,E2,E3B,E5A decision
+    class Z1,Z2,Z1A,Z2A error
+    class D1,D2,D3,J1,J2,J3 sensor
